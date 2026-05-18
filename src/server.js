@@ -4,7 +4,7 @@ import chalk from 'chalk';
 import { db } from './db.js';
 import { exchangeSlackCode, getSlackAuthUrl } from './slack.js';
 import { exchangeSpotifyCode, getSpotifyAuthUrl } from './spotify.js';
-import { startWorker } from './worker.js';
+import { getSyncStats, startWorker, syncOnce } from './worker.js';
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -112,6 +112,31 @@ app.get('/', (req, res) => {
         <p><strong>${stats.total || 0}</strong> Slack user(s) started setup</p>
       </div>
     `));
+});
+
+app.get('/health', (req, res) => {
+    const stats = getSyncStats.get();
+    res.json({
+        ok: true,
+        totalUsers: stats.total_users || 0,
+        spotifyConnectedUsers: stats.spotify_connected_users || 0,
+        activeStatuses: stats.active_statuses || 0,
+    });
+});
+
+app.get('/sync-now', async (req, res) => {
+    const expectedSecret = process.env.SYNC_SECRET;
+    if (expectedSecret && req.query.secret !== expectedSecret) {
+        res.status(401).json({ ok: false, error: 'Unauthorized' });
+        return;
+    }
+
+    try {
+        const result = await syncOnce();
+        res.json({ ok: true, ...result });
+    } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+    }
 });
 
 app.get('/auth/slack', (req, res) => {
