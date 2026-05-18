@@ -1,10 +1,6 @@
 import Database from 'better-sqlite3';
-import os from 'os';
-import path from 'path';
 
-const dbPath = process.env.SQLITE_PATH || (process.env.VERCEL ? path.join(os.tmpdir(), 'app.db') : 'app.db');
-
-export const db = new Database(dbPath);
+export const db = new Database('app.db');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (

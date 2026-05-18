@@ -13,3 +13,15 @@ Multi-user app that updates each connected user's Slack status with their curren
 7. Open `http://localhost:3000` and connect Slack, then Spotify.
 
 Use `npm run local` for the old single-user local watcher.
+
+### Heroku
+
+Set these config vars to your Heroku app URL:
+
+```env
+BASE_URL=https://your-app-name.herokuapp.com
+SLACK_REDIRECT_URI=https://your-app-name.herokuapp.com/auth/slack/callback
+SPOTIFY_REDIRECT_URI=https://your-app-name.herokuapp.com/auth/spotify/callback
+```
+
+Add the same callback URLs in the Slack and Spotify app dashboards.
