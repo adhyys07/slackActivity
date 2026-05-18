@@ -6,7 +6,7 @@ import { exchangeSlackCode, getSlackAuthUrl } from './slack.js';
 import { exchangeSpotifyCode, getSpotifyAuthUrl } from './spotify.js';
 import { startWorker } from './worker.js';
 
-const app = express();
+export const app = express();
 const port = process.env.PORT || 3000;
 
 const upsertSlackUser = db.prepare(`
@@ -181,9 +181,17 @@ app.get('/auth/spotify/callback', async (req, res) => {
     }
 });
 
-app.listen(port, () => {
+export function startServer() {
     const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
-    console.log(chalk.bold.blue('Slack Spotify Status app'));
-    console.log(chalk.gray(`Listening on ${baseUrl}`));
-    startWorker();
-});
+    app.listen(port, () => {
+        console.log(chalk.bold.blue('Slack Spotify Status app'));
+        console.log(chalk.gray(`Listening on ${baseUrl}`));
+        startWorker();
+    });
+}
+
+if (!process.env.VERCEL) {
+    startServer();
+}
+
+export default app;
