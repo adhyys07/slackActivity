@@ -14,13 +14,16 @@ function tokenExpiry(expiresIn) {
     return Date.now() + ((expiresIn ?? 3600) - 60) * 1000;
 }
 
+const SPOTIFY_SCOPE = 'user-read-currently-playing user-read-playback-state';
+
 export function getSpotifyAuthUrl(userId) {
     const url = new URL('https://accounts.spotify.com/authorize');
     url.searchParams.set('client_id', process.env.SPOTIFY_CLIENT_ID);
     url.searchParams.set('response_type', 'code');
     url.searchParams.set('redirect_uri', getSpotifyRedirectUri());
-    url.searchParams.set('scope', 'user-read-currently-playing');
+    url.searchParams.set('scope', SPOTIFY_SCOPE);
     url.searchParams.set('state', String(userId));
+    url.searchParams.set('show_dialog', 'true');
     return url.toString();
 }
 
@@ -79,17 +82,50 @@ export async function refreshSpotifyToken(refreshToken) {
     };
 }
 
-export async function getCurrentSpotifyTrack(accessToken) {
+function formatSpotifyTrack(item) {
+    const artists = item.artists?.map((artist) => artist.name).filter(Boolean).join(', ');
+    return artists ? `${artists} - ${item.name}` : item.name;
+}
+
+export async function getSpotifyPlayback(accessToken) {
     const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
         headers: { Authorization: `Bearer ${accessToken}` },
     });
 
-    if (res.status === 204 || res.status === 202) return null;
-    if (!res.ok) throw new Error(`Spotify currently-playing failed: ${res.status}`);
+    if (res.status === 204) {
+        return { track: null, reason: 'Spotify returned no active playback', status: res.status };
+    }
+
+    if (res.status === 202) {
+        return { track: null, reason: 'Spotify playback data is not ready yet', status: res.status };
+    }
+
+    if (!res.ok) {
+        let detail = '';
+        try {
+            const error = await res.json();
+            detail = error.error?.message ? `: ${error.error.message}` : '';
+        } catch {}
+        throw new Error(`Spotify currently-playing failed: ${res.status}${detail}`);
+    }
 
     const data = await res.json();
-    if (!data.is_playing || data.currently_playing_type !== 'track' || !data.item) return null;
+    if (!data.is_playing) {
+        return { track: null, reason: 'Spotify is not currently playing', status: res.status };
+    }
 
-    const artists = data.item.artists?.map((artist) => artist.name).filter(Boolean).join(', ');
-    return artists ? `${artists} - ${data.item.name}` : data.item.name;
+    if (data.currently_playing_type !== 'track' || !data.item) {
+        return {
+            track: null,
+            reason: `Spotify is playing ${data.currently_playing_type || 'unknown content'}, not a track`,
+            status: res.status,
+        };
+    }
+
+    return { track: formatSpotifyTrack(data.item), reason: 'track found', status: res.status };
+}
+
+export async function getCurrentSpotifyTrack(accessToken) {
+    const playback = await getSpotifyPlayback(accessToken);
+    return playback.track;
 }

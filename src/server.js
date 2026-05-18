@@ -132,7 +132,7 @@ app.get('/sync-now', async (req, res) => {
     }
 
     try {
-        const result = await syncOnce();
+        const result = await syncOnce({ force: req.query.force === '1' || req.query.force === 'true' });
         res.json({ ok: true, ...result });
     } catch (err) {
         res.status(500).json({ ok: false, error: err.message });

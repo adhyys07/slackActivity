@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import { db } from './db.js';
 import { setSlackStatus } from './slack.js';
-import { getCurrentSpotifyTrack, refreshSpotifyToken } from './spotify.js';
+import { getSpotifyPlayback, refreshSpotifyToken } from './spotify.js';
 
 const getConnectedUsers = db.prepare(`
 SELECT *
@@ -51,36 +51,61 @@ async function getValidSpotifyAccessToken(user) {
     return refreshed.accessToken;
 }
 
-export async function syncOnce() {
+export async function syncOnce({ force = false } = {}) {
     const users = getConnectedUsers.all();
     if (!users.length) {
         console.log(chalk.gray('sync skipped: no fully connected users'));
-        return { users: 0, updated: 0 };
+        return { users: 0, updated: 0, results: [] };
     }
 
     let updated = 0;
+    const results = [];
     for (const user of users) {
         try {
             const accessToken = await getValidSpotifyAccessToken(user);
-            const track = await getCurrentSpotifyTrack(accessToken);
+            const playback = await getSpotifyPlayback(accessToken);
+            const track = playback.track;
             const text = track ? `Listening to ${track}` : '';
             const emoji = track ? ':musical_note:' : '';
 
-            if (text === user.last_status_text && emoji === user.last_status_emoji) continue;
+            if (!force && text === user.last_status_text && emoji === user.last_status_emoji) {
+                results.push({
+                    userId: user.slack_user_id,
+                    track,
+                    updated: false,
+                    reason: 'status unchanged',
+                    spotify: playback.reason,
+                });
+                continue;
+            }
 
-            await setSlackStatus(text, emoji, user.slack_user_token);
+            const slackChanged = await setSlackStatus(text, emoji, user.slack_user_token, { force });
             updateLastStatus.run(text, emoji, user.id);
-            updated += 1;
+            if (slackChanged) updated += 1;
 
             const label = track || 'cleared status';
             console.log(chalk.green('synced'), chalk.gray(user.slack_user_id), label);
             if (!track) console.log(chalk.gray(`no Spotify track playing for ${user.slack_user_id}`));
+            results.push({
+                userId: user.slack_user_id,
+                track,
+                updated: slackChanged,
+                reason: track ? 'track synced' : 'no active Spotify track; status cleared',
+                spotify: playback.reason,
+                forced: force,
+            });
         } catch (err) {
             console.error(chalk.red(`sync failed for user ${user.id}:`), err.message);
+            results.push({
+                userId: user.slack_user_id,
+                track: null,
+                updated: false,
+                error: err.message,
+            });
         }
     }
 
-    return { users: users.length, updated };
+    return { users: users.length, updated, results };
 }
 
 export function startWorker() {

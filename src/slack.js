@@ -62,10 +62,10 @@ async function postSlackStatus(text, emoji, token) {
     return res.json();
 }
 
-export async function setSlackStatus(text, emoji, token) {
+export async function setSlackStatus(text, emoji, token, options = {}) {
     const cacheKey = token || 'default';
     const last = lastStatuses.get(cacheKey);
-    if (last?.text === text && last?.emoji === emoji) return false;
+    if (!options.force && last?.text === text && last?.emoji === emoji) return false;
 
     let data = await postSlackStatus(text, emoji, token);
     if (!data.ok && data.error === 'profile_status_set_failed_not_valid_emoji' && emoji) {
