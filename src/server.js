@@ -1,47 +1,13 @@
 import 'dotenv/config';
 import express from 'express';
 import chalk from 'chalk';
-import { db } from './db.js';
+import { findSlackUser, findUserById, getStats, getSyncStats, initDb, saveSpotifyTokens, upsertSlackUser } from './db.js';
 import { exchangeSlackCode, getSlackAuthUrl } from './slack.js';
 import { exchangeSpotifyCode, getSpotifyAuthUrl } from './spotify.js';
-import { getSyncStats, startWorker, syncOnce } from './worker.js';
+import { startWorker, syncOnce } from './worker.js';
 
 const app = express();
 const port = process.env.PORT || 3000;
-
-const upsertSlackUser = db.prepare(`
-INSERT INTO users (slack_team_id, slack_user_id, slack_user_token, updated_at)
-VALUES (?, ?, ?, unixepoch())
-ON CONFLICT(slack_team_id, slack_user_id)
-DO UPDATE SET
-  slack_user_token = excluded.slack_user_token,
-  updated_at = unixepoch()
-`);
-
-const findSlackUser = db.prepare(`
-SELECT *
-FROM users
-WHERE slack_team_id = ?
-AND slack_user_id = ?
-`);
-
-const findUserById = db.prepare('SELECT * FROM users WHERE id = ?');
-
-const saveSpotifyTokens = db.prepare(`
-UPDATE users
-SET spotify_access_token = ?,
-    spotify_refresh_token = ?,
-    spotify_token_expires_at = ?,
-    updated_at = unixepoch()
-WHERE id = ?
-`);
-
-const getStats = db.prepare(`
-SELECT
-  COUNT(*) AS total,
-  SUM(CASE WHEN spotify_refresh_token IS NOT NULL THEN 1 ELSE 0 END) AS connected
-FROM users
-`);
 
 function page(title, body) {
     return `<!doctype html>
@@ -101,8 +67,8 @@ function page(title, body) {
 </html>`;
 }
 
-app.get('/', (req, res) => {
-    const stats = getStats.get();
+app.get('/', async (req, res) => {
+    const stats = await getStats();
     res.type('html').send(page('Slack Spotify Status', `
       <h1>Slack Spotify Status</h1>
       <p>Connect Slack and Spotify, then this app will update your Slack status with your currently playing song.</p>
@@ -114,8 +80,8 @@ app.get('/', (req, res) => {
     `));
 });
 
-app.get('/health', (req, res) => {
-    const stats = getSyncStats.get();
+app.get('/health', async (req, res) => {
+    const stats = await getSyncStats();
     res.json({
         ok: true,
         totalUsers: stats.total_users || 0,
@@ -149,8 +115,8 @@ app.get('/auth/slack/callback', async (req, res) => {
         if (!req.query.code) throw new Error('Missing Slack authorization code');
 
         const slack = await exchangeSlackCode(req.query.code);
-        upsertSlackUser.run(slack.teamId, slack.userId, slack.userToken);
-        const user = findSlackUser.get(slack.teamId, slack.userId);
+        await upsertSlackUser(slack);
+        const user = await findSlackUser(slack.teamId, slack.userId);
 
         res.type('html').send(page('Connect Spotify', `
           <h1>Slack connected</h1>
@@ -166,9 +132,9 @@ app.get('/auth/slack/callback', async (req, res) => {
     }
 });
 
-app.get('/auth/spotify', (req, res) => {
+app.get('/auth/spotify', async (req, res) => {
     const userId = req.query.user;
-    const user = findUserById.get(userId);
+    const user = await findUserById(userId);
     if (!user) return res.status(404).send('User not found');
 
     res.redirect(getSpotifyAuthUrl(user.id));
@@ -179,16 +145,11 @@ app.get('/auth/spotify/callback', async (req, res) => {
         if (req.query.error) throw new Error(String(req.query.error));
         if (!req.query.code) throw new Error('Missing Spotify authorization code');
 
-        const user = findUserById.get(req.query.state);
+        const user = await findUserById(req.query.state);
         if (!user) return res.status(404).send('User not found');
 
         const spotify = await exchangeSpotifyCode(req.query.code);
-        saveSpotifyTokens.run(
-            spotify.accessToken,
-            spotify.refreshToken,
-            spotify.expiresAt,
-            user.id,
-        );
+        await saveSpotifyTokens({ userId: user.id, ...spotify });
 
         res.type('html').send(page('Connected', `
           <h1>You are connected</h1>
@@ -205,6 +166,8 @@ app.get('/auth/spotify/callback', async (req, res) => {
         `));
     }
 });
+
+await initDb();
 
 app.listen(port, () => {
     const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;

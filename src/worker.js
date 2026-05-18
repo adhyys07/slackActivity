@@ -1,39 +1,7 @@
 import chalk from 'chalk';
-import { db } from './db.js';
+import { getConnectedUsers, updateLastStatus, updateSpotifyToken } from './db.js';
 import { setSlackStatus } from './slack.js';
 import { getSpotifyPlayback, refreshSpotifyToken } from './spotify.js';
-
-const getConnectedUsers = db.prepare(`
-SELECT *
-FROM users
-WHERE slack_user_token IS NOT NULL
-AND spotify_refresh_token IS NOT NULL
-`);
-
-export const getSyncStats = db.prepare(`
-SELECT
-  COUNT(*) AS total_users,
-  SUM(CASE WHEN spotify_refresh_token IS NOT NULL THEN 1 ELSE 0 END) AS spotify_connected_users,
-  SUM(CASE WHEN last_status_text IS NOT NULL AND last_status_text != '' THEN 1 ELSE 0 END) AS active_statuses
-FROM users
-`);
-
-const updateSpotifyToken = db.prepare(`
-UPDATE users
-SET spotify_access_token = ?,
-    spotify_refresh_token = ?,
-    spotify_token_expires_at = ?,
-    updated_at = unixepoch()
-WHERE id = ?
-`);
-
-const updateLastStatus = db.prepare(`
-UPDATE users
-SET last_status_text = ?,
-    last_status_emoji = ?,
-    updated_at = unixepoch()
-WHERE id = ?
-`);
 
 async function getValidSpotifyAccessToken(user) {
     if (user.spotify_access_token && Date.now() < user.spotify_token_expires_at) {
@@ -41,18 +9,13 @@ async function getValidSpotifyAccessToken(user) {
     }
 
     const refreshed = await refreshSpotifyToken(user.spotify_refresh_token);
-    updateSpotifyToken.run(
-        refreshed.accessToken,
-        refreshed.refreshToken,
-        refreshed.expiresAt,
-        user.id,
-    );
+    await updateSpotifyToken({ userId: user.id, ...refreshed });
 
     return refreshed.accessToken;
 }
 
 export async function syncOnce({ force = false } = {}) {
-    const users = getConnectedUsers.all();
+    const users = await getConnectedUsers();
     if (!users.length) {
         console.log(chalk.gray('sync skipped: no fully connected users'));
         return { users: 0, updated: 0, results: [] };
@@ -80,7 +43,7 @@ export async function syncOnce({ force = false } = {}) {
             }
 
             const slackChanged = await setSlackStatus(text, emoji, user.slack_user_token, { force });
-            updateLastStatus.run(text, emoji, user.id);
+            await updateLastStatus({ userId: user.id, text, emoji });
             if (slackChanged) updated += 1;
 
             const label = track || 'cleared status';

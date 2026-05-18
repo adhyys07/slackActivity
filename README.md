@@ -16,6 +16,14 @@ Use `npm run local` for the old single-user local watcher.
 
 ### Heroku
 
+Attach Heroku Postgres before connecting users:
+
+```powershell
+heroku addons:create heroku-postgresql:essential-0 -a your-app-name
+```
+
+Heroku will set `DATABASE_URL` automatically. Without Postgres, connected users are stored in SQLite and will disappear after redeploys or dyno restarts.
+
 Set these config vars to your Heroku app URL:
 
 ```env
