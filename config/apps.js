@@ -20,9 +20,9 @@ export const APP_DB= {
       "blender.exe":         { name: "Blender",         emoji: ":art:",         category: "design" },
       "blender":             { name: "Blender",         emoji: ":art:",         category: "design" },
 
-      "Spotify.exe":         { name: "Spotify",         emoji: ":musical_note:", category: "music" },
-      "Spotify":             { name: "Spotify",         emoji: ":musical_note:", category: "music" },
-      "spotify":             { name: "Spotify",         emoji: ":musical_note:", category: "music" },
+      "Spotify.exe":         { name: "Spotify",         emoji: ":spotify_logo:", category: "music" },
+      "Spotify":             { name: "Spotify",         emoji: ":spotify_logo:", category: "music" },
+      "spotify":             { name: "Spotify",         emoji: ":spotify_logo:", category: "music" },
       "Music":               { name: "Apple Music",     emoji: ":musical_note:", category: "music" },
       "foobar2000.exe":      { name: "foobar2000",      emoji: ":musical_note:", category: "music" },
 

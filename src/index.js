@@ -19,7 +19,7 @@ async function detectActivity(processes) {
     const steam = await detectSteamGame(processes);
     if (steam) return steam;
 
-    const spotify = detectSpotify(processes);
+    const spotify = await detectSpotify(processes);
     if (spotify) return spotify;
 
     const dev = detectDevTool(processes);
