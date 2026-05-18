@@ -1,13 +1,15 @@
 import 'dotenv/config';
 import express from 'express';
 import chalk from 'chalk';
-import { findSlackUser, findUserById, getStats, getSyncStats, initDb, saveSpotifyTokens, upsertSlackUser } from './db.js';
+import { ensureAgentToken, findSlackUser, findUserByAgentToken, findUserById, getStats, getSyncStats, initDb, saveSpotifyTokens, updateLocalActivity, upsertSlackUser } from './db.js';
 import { exchangeSlackCode, getSlackAuthUrl } from './slack.js';
 import { exchangeSpotifyCode, getSpotifyAuthUrl } from './spotify.js';
 import { startWorker, syncOnce } from './worker.js';
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+app.use(express.json({ limit: '16kb' }));
 
 function page(title, body) {
     return `<!doctype html>
@@ -105,6 +107,30 @@ app.get('/sync-now', async (req, res) => {
     }
 });
 
+app.post('/api/local-activity', async (req, res) => {
+    const auth = req.headers.authorization || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : null;
+    if (!token) {
+        res.status(401).json({ ok: false, error: 'Missing local agent token' });
+        return;
+    }
+
+    const user = await findUserByAgentToken(token);
+    if (!user) {
+        res.status(401).json({ ok: false, error: 'Invalid local agent token' });
+        return;
+    }
+
+    const activity = req.body?.activity || null;
+    if (activity && (!activity.name || !activity.category || !activity.emoji)) {
+        res.status(400).json({ ok: false, error: 'Invalid activity payload' });
+        return;
+    }
+
+    await updateLocalActivity({ userId: user.id, activity });
+    res.json({ ok: true });
+});
+
 app.get('/auth/slack', (req, res) => {
     res.redirect(getSlackAuthUrl());
 });
@@ -117,6 +143,7 @@ app.get('/auth/slack/callback', async (req, res) => {
         const slack = await exchangeSlackCode(req.query.code);
         await upsertSlackUser(slack);
         const user = await findSlackUser(slack.teamId, slack.userId);
+        await ensureAgentToken(user.id);
 
         res.type('html').send(page('Connect Spotify', `
           <h1>Slack connected</h1>
@@ -150,12 +177,14 @@ app.get('/auth/spotify/callback', async (req, res) => {
 
         const spotify = await exchangeSpotifyCode(req.query.code);
         await saveSpotifyTokens({ userId: user.id, ...spotify });
+        const agentToken = await ensureAgentToken(user.id);
+        const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
 
         res.type('html').send(page('Connected', `
           <h1>You are connected</h1>
-          <p>Your Slack status will update while Spotify is playing. You can close this tab.</p>
+          <p>Your Slack status will update while Spotify is playing. To detect Steam and desktop apps, run the local agent on your computer.</p>
           <div class="panel">
-            <p>Keep the app process running with <code>npm start</code>.</p>
+            <p><code>$env:SERVER_URL="${baseUrl}"; $env:LOCAL_AGENT_TOKEN="${agentToken}"; npm run local-agent</code></p>
           </div>
         `));
     } catch (err) {

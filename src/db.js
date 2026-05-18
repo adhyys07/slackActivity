@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import crypto from 'crypto';
 import pg from 'pg';
 
 const { Pool } = pg;
@@ -21,7 +22,12 @@ function normalizeUser(row) {
     return {
         ...row,
         spotify_token_expires_at: Number(row.spotify_token_expires_at || 0),
+        local_activity_updated_at: Number(row.local_activity_updated_at || 0),
     };
+}
+
+function createAgentToken() {
+    return crypto.randomBytes(32).toString('hex');
 }
 
 export async function initDb() {
@@ -35,6 +41,12 @@ CREATE TABLE IF NOT EXISTS users (
   spotify_refresh_token TEXT,
   spotify_access_token TEXT,
   spotify_token_expires_at BIGINT,
+  agent_token TEXT UNIQUE,
+  local_activity_name TEXT,
+  local_activity_emoji TEXT,
+  local_activity_category TEXT,
+  local_activity_detail TEXT,
+  local_activity_updated_at BIGINT,
   last_status_text TEXT,
   last_status_emoji TEXT,
   created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
@@ -42,6 +54,12 @@ CREATE TABLE IF NOT EXISTS users (
   UNIQUE(slack_team_id, slack_user_id)
 );
 `);
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS agent_token TEXT UNIQUE');
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS local_activity_name TEXT');
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS local_activity_emoji TEXT');
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS local_activity_category TEXT');
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS local_activity_detail TEXT');
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS local_activity_updated_at BIGINT');
         return;
     }
 
@@ -54,6 +72,12 @@ CREATE TABLE IF NOT EXISTS users (
   spotify_refresh_token TEXT,
   spotify_access_token TEXT,
   spotify_token_expires_at INTEGER,
+  agent_token TEXT UNIQUE,
+  local_activity_name TEXT,
+  local_activity_emoji TEXT,
+  local_activity_category TEXT,
+  local_activity_detail TEXT,
+  local_activity_updated_at INTEGER,
   last_status_text TEXT,
   last_status_emoji TEXT,
   created_at INTEGER DEFAULT (unixepoch()),
@@ -61,6 +85,17 @@ CREATE TABLE IF NOT EXISTS users (
   UNIQUE(slack_team_id, slack_user_id)
 );
 `);
+
+    const columns = sqlite.prepare('PRAGMA table_info(users)').all().map((column) => column.name);
+    const addColumn = (name, sql) => {
+        if (!columns.includes(name)) sqlite.exec(`ALTER TABLE users ADD COLUMN ${sql}`);
+    };
+    addColumn('agent_token', 'agent_token TEXT');
+    addColumn('local_activity_name', 'local_activity_name TEXT');
+    addColumn('local_activity_emoji', 'local_activity_emoji TEXT');
+    addColumn('local_activity_category', 'local_activity_category TEXT');
+    addColumn('local_activity_detail', 'local_activity_detail TEXT');
+    addColumn('local_activity_updated_at', 'local_activity_updated_at INTEGER');
 }
 
 export async function getStats() {
@@ -106,24 +141,24 @@ FROM users
 export async function upsertSlackUser({ teamId, userId, userToken }) {
     if (usingPostgres) {
         await pool.query(`
-INSERT INTO users (slack_team_id, slack_user_id, slack_user_token, updated_at)
-VALUES ($1, $2, $3, EXTRACT(EPOCH FROM NOW())::BIGINT)
+INSERT INTO users (slack_team_id, slack_user_id, slack_user_token, agent_token, updated_at)
+VALUES ($1, $2, $3, $4, EXTRACT(EPOCH FROM NOW())::BIGINT)
 ON CONFLICT(slack_team_id, slack_user_id)
 DO UPDATE SET
   slack_user_token = EXCLUDED.slack_user_token,
   updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT
-`, [teamId, userId, userToken]);
+`, [teamId, userId, userToken, createAgentToken()]);
         return;
     }
 
     sqlite.prepare(`
-INSERT INTO users (slack_team_id, slack_user_id, slack_user_token, updated_at)
-VALUES (?, ?, ?, unixepoch())
+INSERT INTO users (slack_team_id, slack_user_id, slack_user_token, agent_token, updated_at)
+VALUES (?, ?, ?, ?, unixepoch())
 ON CONFLICT(slack_team_id, slack_user_id)
 DO UPDATE SET
   slack_user_token = excluded.slack_user_token,
   updated_at = unixepoch()
-`).run(teamId, userId, userToken);
+`).run(teamId, userId, userToken, createAgentToken());
 }
 
 export async function findSlackUser(teamId, userId) {
@@ -150,6 +185,40 @@ export async function findUserById(id) {
     }
 
     return normalizeUser(sqlite.prepare('SELECT * FROM users WHERE id = ?').get(id));
+}
+
+export async function ensureAgentToken(userId) {
+    const user = await findUserById(userId);
+    if (!user) return null;
+    if (user.agent_token) return user.agent_token;
+
+    const token = createAgentToken();
+    if (usingPostgres) {
+        await pool.query(`
+UPDATE users
+SET agent_token = $1,
+    updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT
+WHERE id = $2
+`, [token, userId]);
+        return token;
+    }
+
+    sqlite.prepare(`
+UPDATE users
+SET agent_token = ?,
+    updated_at = unixepoch()
+WHERE id = ?
+`).run(token, userId);
+    return token;
+}
+
+export async function findUserByAgentToken(agentToken) {
+    if (usingPostgres) {
+        const { rows } = await pool.query('SELECT * FROM users WHERE agent_token = $1', [agentToken]);
+        return normalizeUser(rows[0]);
+    }
+
+    return normalizeUser(sqlite.prepare('SELECT * FROM users WHERE agent_token = ?').get(agentToken));
 }
 
 export async function saveSpotifyTokens({ userId, accessToken, refreshToken, expiresAt }) {
@@ -217,4 +286,37 @@ SET last_status_text = ?,
     updated_at = unixepoch()
 WHERE id = ?
 `).run(text, emoji, userId);
+}
+
+export async function updateLocalActivity({ userId, activity }) {
+    const name = activity?.name || null;
+    const emoji = activity?.emoji || null;
+    const category = activity?.category || null;
+    const detail = activity?.detail || null;
+    const updatedAt = activity ? Date.now() : null;
+
+    if (usingPostgres) {
+        await pool.query(`
+UPDATE users
+SET local_activity_name = $1,
+    local_activity_emoji = $2,
+    local_activity_category = $3,
+    local_activity_detail = $4,
+    local_activity_updated_at = $5,
+    updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT
+WHERE id = $6
+`, [name, emoji, category, detail, updatedAt, userId]);
+        return;
+    }
+
+    sqlite.prepare(`
+UPDATE users
+SET local_activity_name = ?,
+    local_activity_emoji = ?,
+    local_activity_category = ?,
+    local_activity_detail = ?,
+    local_activity_updated_at = ?,
+    updated_at = unixepoch()
+WHERE id = ?
+`).run(name, emoji, category, detail, updatedAt, userId);
 }

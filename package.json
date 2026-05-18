@@ -7,6 +7,7 @@
     "scripts": {
         "start": "node src/server.js",
         "local": "node src/index.js",
+        "local-agent": "node src/local-agent.js",
         "dev": "node --watch src/server.js",
         "setup": "node src/setup.js",
         "spotify-auth": "node src/spotify-auth.js"

@@ -3,6 +3,32 @@ import { getConnectedUsers, updateLastStatus, updateSpotifyToken } from './db.js
 import { setSlackStatus } from './slack.js';
 import { getSpotifyPlayback, refreshSpotifyToken } from './spotify.js';
 
+const LOCAL_ACTIVITY_TTL = parseInt(process.env.LOCAL_ACTIVITY_TTL ?? '45000', 10);
+
+function getFreshLocalActivity(user) {
+    if (!user.local_activity_name || !user.local_activity_updated_at) return null;
+    if (Date.now() - Number(user.local_activity_updated_at) > LOCAL_ACTIVITY_TTL) return null;
+
+    return {
+        name: user.local_activity_name,
+        emoji: user.local_activity_emoji,
+        category: user.local_activity_category,
+        detail: user.local_activity_detail,
+    };
+}
+
+function buildLocalStatus(activity) {
+    const labels = {
+        game: 'Playing',
+        coding: 'Coding in',
+        design: 'Designing in',
+        music: 'Listening on',
+        media: 'Using',
+    };
+    const text = `${labels[activity.category] ?? 'Using'} ${activity.name}`;
+    return { text, emoji: activity.emoji || ':computer:' };
+}
+
 async function getValidSpotifyAccessToken(user) {
     if (user.spotify_access_token && Date.now() < user.spotify_token_expires_at) {
         return user.spotify_access_token;
@@ -25,11 +51,21 @@ export async function syncOnce({ force = false } = {}) {
     const results = [];
     for (const user of users) {
         try {
-            const accessToken = await getValidSpotifyAccessToken(user);
-            const playback = await getSpotifyPlayback(accessToken);
-            const track = playback.track;
-            const text = track ? `Listening to ${track}` : '';
-            const emoji = track ? ':musical_note:' : '';
+            const localActivity = getFreshLocalActivity(user);
+            let playback = null;
+            let track = null;
+            let text = '';
+            let emoji = '';
+
+            if (localActivity) {
+                ({ text, emoji } = buildLocalStatus(localActivity));
+            } else {
+                const accessToken = await getValidSpotifyAccessToken(user);
+                playback = await getSpotifyPlayback(accessToken);
+                track = playback.track;
+                text = track ? `Listening to ${track}` : '';
+                emoji = track ? ':musical_note:' : '';
+            }
 
             if (!force && text === user.last_status_text && emoji === user.last_status_emoji) {
                 results.push({
@@ -37,7 +73,9 @@ export async function syncOnce({ force = false } = {}) {
                     track,
                     updated: false,
                     reason: 'status unchanged',
-                    spotify: playback.reason,
+                    source: localActivity ? 'local' : 'spotify',
+                    localActivity,
+                    spotify: playback?.reason,
                 });
                 continue;
             }
@@ -53,8 +91,10 @@ export async function syncOnce({ force = false } = {}) {
                 userId: user.slack_user_id,
                 track,
                 updated: slackChanged,
-                reason: track ? 'track synced' : 'no active Spotify track; status cleared',
-                spotify: playback.reason,
+                reason: localActivity ? 'local activity synced' : track ? 'track synced' : 'no active Spotify track; status cleared',
+                source: localActivity ? 'local' : 'spotify',
+                localActivity,
+                spotify: playback?.reason,
                 forced: force,
             });
         } catch (err) {
