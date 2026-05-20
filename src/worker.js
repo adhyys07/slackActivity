@@ -18,11 +18,17 @@ function getFreshLocalActivity(user) {
 }
 
 function buildLocalStatus(activity) {
+    if (activity.category === 'music') {
+        return {
+            text: activity.detail ? `Listening to ${activity.detail}` : `Listening on ${activity.name}`,
+            emoji: activity.emoji || ':musical_note:',
+        };
+    }
+
     const labels = {
         game: 'Playing',
         coding: 'Coding in',
         design: 'Designing in',
-        music: 'Listening on',
         media: 'Using',
     };
     const text = `${labels[activity.category] ?? 'Using'} ${activity.name}`;

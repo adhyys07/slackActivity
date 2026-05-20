@@ -6,6 +6,7 @@ import os from 'os';
 import path from 'path';
 import { execFile } from 'child_process';
 import { detectDevTool } from './detectors/devtools.js';
+import { detectSpotify } from './detectors/spotify.js';
 import { detectSteamGame, getSteamAppList } from './detectors/steam.js';
 import { getRunningProcesses } from './platform/processes.js';
 
@@ -78,6 +79,9 @@ async function getAgentToken() {
 async function detectLocalActivity(processes) {
     const steam = await detectSteamGame(processes);
     if (steam) return steam;
+
+    const spotify = await detectSpotify(processes);
+    if (spotify) return spotify;
 
     const dev = detectDevTool(processes);
     if (dev) return dev;
