@@ -70,6 +70,12 @@ export function getInstalledSteamGames(steamPath = getDefaultSteamPath()) {
 let steamAppCache = null;
 let cacheTimestamp = 0;
 const CACHE_TTL = 24 * 60 * 60 * 1000;
+const IGNORED_STEAM_APP_IDS = new Set(['228980']);
+const IGNORED_STEAM_APP_NAMES = new Set(['steamworks common redistributables']);
+
+function isIgnoredSteamApp(appid, game) {
+  return IGNORED_STEAM_APP_IDS.has(String(appid)) || IGNORED_STEAM_APP_NAMES.has(game.name.toLowerCase());
+}
 
 export async function getSteamAppList() {
   if (steamAppCache && Date.now() - cacheTimestamp < CACHE_TTL) return steamAppCache;
@@ -93,6 +99,8 @@ export async function detectSteamGame(runningProcesses) {
   const processSet = new Set(runningProcesses.map((p) => p.toLowerCase()));
 
   for (const [appid, game] of Object.entries(installed)) {
+    if (isIgnoredSteamApp(appid, game)) continue;
+
     if (game.exe && processSet.has(path.basename(game.exe).toLowerCase())) {
       return { name: game.name, appid, emoji: ':video_game:', category: 'game' };
     }

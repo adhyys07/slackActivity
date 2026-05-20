@@ -114,7 +114,7 @@ function getTrackLinux() {
 export async function detectSpotify(processes) {
     const webTrack = await getSpotifyWebTrack();
     if (webTrack) {
-        return { name: 'Spotify', emoji: ':musical_note:', category: 'music', detail: webTrack };
+        return { name: 'Spotify', emoji: ':spotify_logo:', category: 'music', detail: webTrack };
     }
 
     if (!isSpotifyRunning(processes)) return null;
@@ -126,5 +126,5 @@ export async function detectSpotify(processes) {
         else track = getTrackLinux();
     } catch {}
     
-    return { name: 'Spotify', emoji: ':musical_note:', category: 'music', detail: track };
+    return { name: 'Spotify', emoji: ':spotify_logo:', category: 'music', detail: track };
 }

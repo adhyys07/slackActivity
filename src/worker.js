@@ -21,7 +21,7 @@ function buildLocalStatus(activity) {
     if (activity.category === 'music') {
         return {
             text: activity.detail ? `Listening to ${activity.detail}` : `Listening on ${activity.name}`,
-            emoji: activity.emoji || ':musical_note:',
+            emoji: activity.emoji || ':spotify_logo:',
         };
     }
 
@@ -70,7 +70,7 @@ export async function syncOnce({ force = false } = {}) {
                 playback = await getSpotifyPlayback(accessToken);
                 track = playback.track;
                 text = track ? `Listening to ${track}` : '';
-                emoji = track ? ':musical_note:' : '';
+                emoji = track ? ':spotify_logo:' : '';
             }
 
             if (!force && text === user.last_status_text && emoji === user.last_status_emoji) {
