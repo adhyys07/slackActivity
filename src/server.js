@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import chalk from 'chalk';
-import { ensureAgentToken, findSlackUser, findUserByAgentToken, findUserById, getStats, getSyncStats, initDb, saveSpotifyTokens, updateLocalActivity, upsertSlackUser } from './db.js';
+import { clearPairingCode, ensureAgentToken, findSlackUser, findUserByAgentToken, findUserById, findUserByPairingCode, getStats, getSyncStats, initDb, saveSpotifyTokens, setPairingCode, updateLocalActivity, upsertSlackUser } from './db.js';
 import { exchangeSlackCode, getSlackAuthUrl } from './slack.js';
 import { exchangeSpotifyCode, getSpotifyAuthUrl } from './spotify.js';
 import { startWorker, syncOnce } from './worker.js';
@@ -132,7 +132,9 @@ app.post('/api/local-activity', async (req, res) => {
 });
 
 app.get('/auth/slack', (req, res) => {
-    res.redirect(getSlackAuthUrl());
+    const pair = req.query.pair ? String(req.query.pair) : null;
+    const suffix = pair ? `&state=${encodeURIComponent(pair)}` : '';
+    res.redirect(`${getSlackAuthUrl()}${suffix}`);
 });
 
 app.get('/auth/slack/callback', async (req, res) => {
@@ -140,15 +142,19 @@ app.get('/auth/slack/callback', async (req, res) => {
         if (req.query.error) throw new Error(String(req.query.error));
         if (!req.query.code) throw new Error('Missing Slack authorization code');
 
+        const pairCode = req.query.state ? String(req.query.state) : null;
         const slack = await exchangeSlackCode(req.query.code);
         await upsertSlackUser(slack);
         const user = await findSlackUser(slack.teamId, slack.userId);
         await ensureAgentToken(user.id);
+        if (pairCode) {
+            await setPairingCode({ userId: user.id, code: pairCode, expiresAt: Date.now() + 10 * 60 * 1000 });
+        }
 
         res.type('html').send(page('Connect Spotify', `
           <h1>Slack connected</h1>
           <p>One more step: connect Spotify so the app can read your currently playing track.</p>
-          <a class="button" href="/auth/spotify?user=${encodeURIComponent(user.id)}">Connect Spotify</a>
+          <a class="button" href="/auth/spotify?user=${encodeURIComponent(user.id)}${pairCode ? `&pair=${encodeURIComponent(pairCode)}` : ''}">Connect Spotify</a>
         `));
     } catch (err) {
         res.status(500).type('html').send(page('Slack Error', `
@@ -164,7 +170,7 @@ app.get('/auth/spotify', async (req, res) => {
     const user = await findUserById(userId);
     if (!user) return res.status(404).send('User not found');
 
-    res.redirect(getSpotifyAuthUrl(user.id));
+    res.redirect(getSpotifyAuthUrl(req.query.pair ? `${user.id}:${req.query.pair}` : user.id));
 });
 
 app.get('/auth/spotify/callback', async (req, res) => {
@@ -172,12 +178,16 @@ app.get('/auth/spotify/callback', async (req, res) => {
         if (req.query.error) throw new Error(String(req.query.error));
         if (!req.query.code) throw new Error('Missing Spotify authorization code');
 
-        const user = await findUserById(req.query.state);
+        const [userId, pairCode] = String(req.query.state || '').split(':');
+        const user = await findUserById(userId);
         if (!user) return res.status(404).send('User not found');
 
         const spotify = await exchangeSpotifyCode(req.query.code);
         await saveSpotifyTokens({ userId: user.id, ...spotify });
         const agentToken = await ensureAgentToken(user.id);
+        if (pairCode) {
+            await setPairingCode({ userId: user.id, code: pairCode, expiresAt: Date.now() + 10 * 60 * 1000 });
+        }
         const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
 
         res.type('html').send(page('Connected', `
@@ -194,6 +204,34 @@ app.get('/auth/spotify/callback', async (req, res) => {
           <p><a href="/">Return home</a></p>
         `));
     }
+});
+
+app.get('/pair', (req, res) => {
+    const code = req.query.code ? String(req.query.code) : null;
+    if (!code) return res.status(400).send('Missing pairing code');
+
+    res.type('html').send(page('Pair Local Agent', `
+      <h1>Pair local agent</h1>
+      <p>Connect Slack and Spotify to pair this computer with your account.</p>
+      <a class="button" href="/auth/slack?pair=${encodeURIComponent(code)}">Connect Slack</a>
+    `));
+});
+
+app.get('/api/local-agent/pairing/:code', async (req, res) => {
+    const user = await findUserByPairingCode(req.params.code);
+    if (!user || !user.agent_token || !user.spotify_refresh_token) {
+        res.status(202).json({ ok: false, pending: true });
+        return;
+    }
+
+    if (Number(user.pairing_expires_at || 0) < Date.now()) {
+        await clearPairingCode(user.id);
+        res.status(410).json({ ok: false, error: 'Pairing code expired' });
+        return;
+    }
+
+    await clearPairingCode(user.id);
+    res.json({ ok: true, token: user.agent_token });
 });
 
 await initDb();

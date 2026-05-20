@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS users (
   local_activity_category TEXT,
   local_activity_detail TEXT,
   local_activity_updated_at BIGINT,
+  pairing_code TEXT UNIQUE,
+  pairing_expires_at BIGINT,
   last_status_text TEXT,
   last_status_emoji TEXT,
   created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
@@ -60,6 +62,8 @@ CREATE TABLE IF NOT EXISTS users (
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS local_activity_category TEXT');
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS local_activity_detail TEXT');
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS local_activity_updated_at BIGINT');
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS pairing_code TEXT UNIQUE');
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS pairing_expires_at BIGINT');
         return;
     }
 
@@ -78,6 +82,8 @@ CREATE TABLE IF NOT EXISTS users (
   local_activity_category TEXT,
   local_activity_detail TEXT,
   local_activity_updated_at INTEGER,
+  pairing_code TEXT UNIQUE,
+  pairing_expires_at INTEGER,
   last_status_text TEXT,
   last_status_emoji TEXT,
   created_at INTEGER DEFAULT (unixepoch()),
@@ -96,6 +102,8 @@ CREATE TABLE IF NOT EXISTS users (
     addColumn('local_activity_category', 'local_activity_category TEXT');
     addColumn('local_activity_detail', 'local_activity_detail TEXT');
     addColumn('local_activity_updated_at', 'local_activity_updated_at INTEGER');
+    addColumn('pairing_code', 'pairing_code TEXT');
+    addColumn('pairing_expires_at', 'pairing_expires_at INTEGER');
 }
 
 export async function getStats() {
@@ -210,6 +218,57 @@ SET agent_token = ?,
 WHERE id = ?
 `).run(token, userId);
     return token;
+}
+
+export async function setPairingCode({ userId, code, expiresAt }) {
+    if (usingPostgres) {
+        await pool.query(`
+UPDATE users
+SET pairing_code = $1,
+    pairing_expires_at = $2,
+    updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT
+WHERE id = $3
+`, [code, expiresAt, userId]);
+        return;
+    }
+
+    sqlite.prepare(`
+UPDATE users
+SET pairing_code = ?,
+    pairing_expires_at = ?,
+    updated_at = unixepoch()
+WHERE id = ?
+`).run(code, expiresAt, userId);
+}
+
+export async function findUserByPairingCode(code) {
+    if (usingPostgres) {
+        const { rows } = await pool.query('SELECT * FROM users WHERE pairing_code = $1', [code]);
+        return normalizeUser(rows[0]);
+    }
+
+    return normalizeUser(sqlite.prepare('SELECT * FROM users WHERE pairing_code = ?').get(code));
+}
+
+export async function clearPairingCode(userId) {
+    if (usingPostgres) {
+        await pool.query(`
+UPDATE users
+SET pairing_code = NULL,
+    pairing_expires_at = NULL,
+    updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT
+WHERE id = $1
+`, [userId]);
+        return;
+    }
+
+    sqlite.prepare(`
+UPDATE users
+SET pairing_code = NULL,
+    pairing_expires_at = NULL,
+    updated_at = unixepoch()
+WHERE id = ?
+`).run(userId);
 }
 
 export async function findUserByAgentToken(agentToken) {

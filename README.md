@@ -18,13 +18,13 @@ Use `npm run local` for the old single-user local watcher.
 
 The hosted app can read Spotify through the Spotify API, but Steam and desktop apps must be detected on the user's own computer.
 
-After connecting Slack and Spotify, copy the local-agent command shown on the connected page and run it locally:
+Run the local agent on the user's computer:
 
 ```powershell
-$env:SERVER_URL="https://your-app-name.herokuapp.com"; $env:LOCAL_AGENT_TOKEN="token-from-the-app"; npm run local-agent
+$env:SERVER_URL="https://your-app-name.herokuapp.com"; npm run local-agent
 ```
 
-The local agent reports Steam games and supported desktop apps to the hosted app. Fresh local activity takes priority over Spotify.
+The agent opens the hosted app in the browser. After the user authorizes Slack and Spotify, the agent saves its local token in `~/.slack-activity/agent.json` and starts reporting Steam games and supported desktop apps. Fresh local activity takes priority over Spotify.
 
 ### Heroku
 
