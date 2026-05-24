@@ -8,6 +8,11 @@
         "start": "node src/server.js",
         "local": "node src/index.js",
         "local-agent": "node src/local-agent.js",
+        "bundle:agent": "esbuild src/local-agent.js --bundle --platform=node --format=cjs --outfile=build/local-agent.cjs",
+        "build:agent": "npm run build:agent:win && npm run build:agent:linux && npm run build:agent:mac",
+        "build:agent:win": "npm run bundle:agent && pkg build/local-agent.cjs --targets node20-win-x64 --output dist/slack-activity-agent-win-x64.exe && powershell -ExecutionPolicy Bypass -File scripts/build-windows-tray.ps1",
+        "build:agent:linux": "npm run bundle:agent && node -e \"require('fs').mkdirSync('dist/linux',{recursive:true})\" && pkg build/local-agent.cjs --targets node20-linux-x64 --output dist/linux/slack-activity-agent-linux-x64",
+        "build:agent:mac": "npm run bundle:agent && node -e \"require('fs').mkdirSync('dist/macos',{recursive:true})\" && pkg build/local-agent.cjs --targets node22-macos-x64 --no-signature --output dist/macos/slack-activity-agent-macos-x64 && pkg build/local-agent.cjs --targets node22-macos-arm64 --no-signature --no-bytecode --public --output dist/macos/slack-activity-agent-macos-arm64",
         "dev": "node --watch src/server.js",
         "setup": "node src/setup.js",
         "spotify-auth": "node src/spotify-auth.js"
@@ -22,5 +27,9 @@
     },
     "engines": {
         "node": ">=18.0.0"
+    },
+    "devDependencies": {
+        "@yao-pkg/pkg": "^6.19.0",
+        "esbuild": "^0.28.0"
     }
 }

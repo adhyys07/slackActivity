@@ -1,8 +1,8 @@
 import 'dotenv/config';
 import express from 'express';
 import chalk from 'chalk';
-import { clearPairingCode, ensureAgentToken, findSlackUser, findUserByAgentToken, findUserById, findUserByPairingCode, getStats, getSyncStats, initDb, saveSpotifyTokens, setPairingCode, updateLocalActivity, upsertSlackUser } from './db.js';
-import { exchangeSlackCode, getSlackAuthUrl } from './slack.js';
+import { clearPairingCode, ensureAgentToken, findSlackUser, findUserByAgentToken, findUserById, findUserByPairingCode, getStats, getSyncStats, initDb, saveSpotifyTokens, setPairingCode, updateLastStatus, updateLocalActivity, upsertSlackUser } from './db.js';
+import { clearSlackStatus, exchangeSlackCode, getSlackAuthUrl } from './slack.js';
 import { exchangeSpotifyCode, getSpotifyAuthUrl } from './spotify.js';
 import { startWorker, syncOnce } from './worker.js';
 
@@ -128,6 +128,10 @@ app.post('/api/local-activity', async (req, res) => {
     }
 
     await updateLocalActivity({ userId: user.id, activity });
+    if (!activity && req.body?.clearStatus === true) {
+        await clearSlackStatus(user.slack_user_token);
+        await updateLastStatus({ userId: user.id, text: '', emoji: '' });
+    }
     res.json({ ok: true });
 });
 

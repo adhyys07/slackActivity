@@ -10,15 +10,37 @@ import { detectSpotify } from './detectors/spotify.js';
 import { detectSteamGame, getSteamAppList } from './detectors/steam.js';
 import { getRunningProcesses } from './platform/processes.js';
 
-const SERVER_URL = (process.env.SERVER_URL || process.env.BASE_URL || '').replace(/\/$/, '');
+const DEFAULT_SERVER_URL = 'https://slackactivity-c162e24cca07.herokuapp.com';
+const SERVER_URL = (process.env.SERVER_URL || process.env.BASE_URL || DEFAULT_SERVER_URL).replace(/\/$/, '');
 const POLL_INTERVAL = parseInt(process.env.LOCAL_AGENT_INTERVAL ?? process.env.POLL_INTERVAL ?? '5000', 10);
 const DEBUG = process.env.DEBUG === 'true';
 const CONFIG_DIR = path.join(os.homedir(), '.slack-activity');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'agent.json');
+const LOG_FILE = process.env.LOCAL_AGENT_LOG || (process.pkg ? path.join(path.dirname(process.execPath), 'SlackActivityAgent.log') : null);
 
 if (!SERVER_URL) {
     console.error('SERVER_URL is required. Example: $env:SERVER_URL="https://your-app.herokuapp.com"');
     process.exit(1);
+}
+
+function log(...parts) {
+    const message = parts.join(' ');
+    console.log(message);
+    if (LOG_FILE) {
+        try {
+            fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${message}\n`);
+        } catch {}
+    }
+}
+
+function logError(...parts) {
+    const message = parts.join(' ');
+    console.error(message);
+    if (LOG_FILE) {
+        try {
+            fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${message}\n`);
+        } catch {}
+    }
 }
 
 function openBrowser(url) {
@@ -47,9 +69,9 @@ async function pairAgent() {
     const code = crypto.randomBytes(24).toString('hex');
     const pairUrl = `${SERVER_URL}/pair?code=${encodeURIComponent(code)}`;
 
-    console.log(chalk.yellow('No saved local agent token found.'));
-    console.log(chalk.gray('Opening browser to connect Slack and Spotify...'));
-    console.log(chalk.gray(pairUrl));
+    log(chalk.yellow('No saved local agent token found.'));
+    log(chalk.gray('Opening browser to connect Slack and Spotify...'));
+    log(chalk.gray(pairUrl));
     openBrowser(pairUrl);
 
     const deadline = Date.now() + 10 * 60 * 1000;
@@ -57,7 +79,7 @@ async function pairAgent() {
         await new Promise((resolve) => setTimeout(resolve, 3000));
         const res = await fetch(`${SERVER_URL}/api/local-agent/pairing/${code}`);
         if (res.status === 202) {
-            console.log(chalk.gray('Waiting for browser authorization...'));
+            log(chalk.gray('Waiting for browser authorization...'));
             continue;
         }
 
@@ -65,7 +87,7 @@ async function pairAgent() {
         if (!res.ok || !data.ok) throw new Error(data.error || `Pairing failed: ${res.status}`);
 
         saveToken(data.token);
-        console.log(chalk.green('Local agent paired successfully.'));
+        log(chalk.green('Local agent paired successfully.'));
         return data.token;
     }
 
@@ -89,14 +111,14 @@ async function detectLocalActivity(processes) {
     return null;
 }
 
-async function postActivity(token, activity) {
+async function postActivity(token, activity, options = {}) {
     const res = await fetch(`${SERVER_URL}/api/local-activity`, {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ activity }),
+        body: JSON.stringify({ activity, clearStatus: Boolean(options.clearStatus) }),
     });
 
     const data = await res.json().catch(() => ({}));
@@ -106,41 +128,73 @@ async function postActivity(token, activity) {
 }
 
 let lastPayload = null;
+let shutdownStarted = false;
+let intervalHandle = null;
 
-async function tick(token) {
+async function tick(token, options = {}) {
     try {
-        const processes = await getRunningProcesses();
-        const activity = await detectLocalActivity(processes);
+        const activity = options.clear ? null : await detectLocalActivity(await getRunningProcesses());
         const payload = JSON.stringify(activity || null);
 
-        if (payload !== lastPayload) {
-            await postActivity(token, activity);
+        if (options.force || payload !== lastPayload) {
+            await postActivity(token, activity, options);
             lastPayload = payload;
 
             if (activity) {
-                console.log(chalk.green('reported'), chalk.bold(activity.name), chalk.gray(activity.category));
+                log(chalk.green('reported'), chalk.bold(activity.name), chalk.gray(activity.category));
             } else {
-                console.log(chalk.gray('reported no local activity'));
+                log(chalk.gray('reported no local activity'));
             }
         } else if (activity) {
             await postActivity(token, activity);
-            if (DEBUG) console.log(chalk.gray(`refreshed ${activity.name}`));
+            if (DEBUG) log(chalk.gray(`refreshed ${activity.name}`));
         }
     } catch (err) {
-        console.error(chalk.red('local agent error:'), err.message);
+        logError(chalk.red('local agent error:'), err.message);
     }
 }
 
+async function shutdown(token, reason = 'shutdown') {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    if (intervalHandle) clearInterval(intervalHandle);
+
+    log(chalk.yellow(`clearing Slack Activity status before ${reason}...`));
+    await tick(token, { clear: true, clearStatus: true, force: true });
+}
+
 async function main() {
-    console.log(chalk.bold.blue('Slack Activity Local Agent'));
-    console.log(chalk.gray(`Reporting to ${SERVER_URL}`));
+    log(chalk.bold.blue('Slack Activity Local Agent'));
+    log(chalk.gray(`Reporting to ${SERVER_URL}`));
     const token = await getAgentToken();
     await getSteamAppList().catch(() => {});
     await tick(token);
-    setInterval(() => tick(token), POLL_INTERVAL);
+    intervalHandle = setInterval(() => tick(token), POLL_INTERVAL);
+
+    for (const signal of ['SIGINT', 'SIGTERM']) {
+        process.on(signal, async () => {
+            try {
+                await shutdown(token, signal);
+            } finally {
+                process.exit(0);
+            }
+        });
+    }
+
+    if (process.stdin) {
+        process.stdin.setEncoding('utf8');
+        process.stdin.on('data', async (chunk) => {
+            if (!chunk.toLowerCase().includes('shutdown')) return;
+            try {
+                await shutdown(token, 'tray exit');
+            } finally {
+                process.exit(0);
+            }
+        });
+    }
 }
 
 main().catch((err) => {
-    console.error(chalk.red(err.message));
+    logError(chalk.red(err.message));
     process.exit(1);
 });

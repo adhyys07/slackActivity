@@ -102,14 +102,14 @@ export async function detectSteamGame(runningProcesses) {
     if (isIgnoredSteamApp(appid, game)) continue;
 
     if (game.exe && processSet.has(path.basename(game.exe).toLowerCase())) {
-      return { name: game.name, appid, emoji: ':video_game:', category: 'game' };
+      return { name: game.name, appid, emoji: ':steam:', category: 'game' };
     }
 
     const slug = game.name.toLowerCase().replace(/[^a-z0-9]/g, '');
     for (const proc of processSet) {
       const procSlug = proc.replace(/[^a-z0-9]/g, '').replace('exe', '');
       if (procSlug.length > 4 && (procSlug.includes(slug) || slug.includes(procSlug))) {
-        return { name: game.name, appid, emoji: ':video_game:', category: 'game' };
+        return { name: game.name, appid, emoji: ':steam:', category: 'game' };
       }
     }
   }

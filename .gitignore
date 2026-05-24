@@ -2,3 +2,12 @@
 node_modules
 app.db
 app.db-*
+build/
+dist/
+.npm-cache/
+.pkg-cache/
+.tmp/
+tmpbuild/
+package.agent
+package.agent-*
+package.agent.exe
