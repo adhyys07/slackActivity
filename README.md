@@ -72,17 +72,14 @@ codesign --sign - dist/macos/slack-activity-agent-macos-x64
 codesign --sign - dist/macos/slack-activity-agent-macos-arm64
 ```
 
-### Heroku
+### Hosting
 
-Attach Heroku Postgres before connecting users:
+Attach Postgres DB before connecting users,
+For this I used Neon DB as it is free and reliable :)
 
-```powershell
-heroku addons:create heroku-postgresql:essential-0 -a your-app-name
-```
+You need to set `DATABASE_URL` in your environment variable on your hosting service. Without Postgres, connected users are stored in SQLite and will disappear after redeploys or dyno restarts.
 
-Heroku will set `DATABASE_URL` automatically. Without Postgres, connected users are stored in SQLite and will disappear after redeploys or dyno restarts.
-
-Set these config vars to your Heroku app URL:
+Set these config vars to your app URL:
 
 ```env
 BASE_URL=https://your-app-name.herokuapp.com
