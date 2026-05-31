@@ -26,6 +26,7 @@ Use `npm run local` for the old single-user local watcher.
 - Windows tray controls for pause/resume, dashboard, restart, exit, and start on login.
 - Automatic Slack status expiration. The default is 30 minutes.
 - Git project-aware coding status, such as `Coding in slackActivity`.
+- Local agent update checks from GitHub Releases, with dashboard download support.
 
 ### Supported Apps
 
@@ -68,6 +69,8 @@ http://localhost:3784
 ```
 
 From the dashboard, users can see current activity, last sync time, errors, and pause/resume controls.
+
+The dashboard also includes update controls. It checks GitHub Releases for the latest local agent release, shows whether an update is available, and can download the matching asset for the user's OS.
 
 ### Settings
 
@@ -150,6 +153,24 @@ STATUS_EXPIRATION_SECONDS=1800
 ```
 
 Set a larger value for longer-lived statuses, or a smaller value if you want Slack to clear stale activity sooner.
+
+### Auto-Update Downloads
+
+The local agent can check the latest GitHub Release and download the correct asset for the current OS.
+
+Downloaded updates are saved to:
+
+```text
+~/.slack-activity/updates/
+```
+
+The updater currently downloads updates only. It does not replace the running executable automatically yet, because Windows cannot safely replace a running `.exe` directly. Users can download the update from the dashboard and install or replace it manually.
+
+Set the current app version with:
+
+```env
+APP_VERSION=1.0.0
+```
 
 ### Builds
 

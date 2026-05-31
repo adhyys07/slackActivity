@@ -16,6 +16,7 @@ import { getRunningProcesses } from './platform/processes.js';
 import { applyActivitySettings, sortActivitiesByPriority } from '../config/user-settings.js';
 import { loadLocalSettings, pauseForMs, pauseUntilTomorrow, resumeUpdates } from './local-settings.js';
 import { addActivityHistoryEntry, clearActivityHistory, readActivityHistory } from './activity-history.js';
+import { checkForUpdate, downloadUpdate, getUpdateDir, CURRENT_VERSION, } from './updater.js';
 
 const DEFAULT_SERVER_URL = 'https://slackactivity-c162e24cca07.herokuapp.com';
 const SERVER_URL = (process.env.SERVER_URL || process.env.BASE_URL || DEFAULT_SERVER_URL).replace(/\/$/, '');
@@ -29,6 +30,13 @@ let lastSyncAt = null;
 let lastError = null;
 let remoteSettingsCache = null;
 let remoteSettingsFetchedAt = 0;
+let updateState ={
+    checking: false,
+    lastCheckedAt: null,
+    error: null,
+    info: null,
+    downloaded: null,
+};
 const SETTINGS_CACHE_TTL = 30 * 1000;
 
 if (!SERVER_URL) {
@@ -81,6 +89,7 @@ function startDashboard(token) {
             <p>Category: ${lastActivity?.category ?? '-'}</p>
             <p>Last sync: ${lastSyncAt ? new Date(lastSyncAt).toLocaleString() : '-'}</p>
             <p>Error: ${escapeHtml(lastError ?? '-')}</p>
+            ${renderUpdatePanel()}
             ${renderHistoryTable(readActivityHistory())}
             <form method="post" action="/history/clear"><button>Clear history</button></form>
             <form method="post" action="/pause"><button>Pause 1 hour</button></form>
@@ -90,6 +99,23 @@ function startDashboard(token) {
             `);
     });
 
+    app.post('/updates/check', async (req, res) => {
+        await refreshUpdateState();
+        res.redirect('/');
+    });
+
+    app.post('/updates/download', async (req, res) => {
+        try {
+            await downloadAvailableUpdate();
+        } catch (err) {
+            updateState = {
+                ...updateState,
+                error: err.message,
+            };
+        }
+
+        res.redirect('/');
+    });
     app.post('/pause', express.urlencoded({ extended: false }), async (req, res) => {
         pauseForMs(60 * 60 * 1000);
         await tick(token, { clear: true, clearStatus: true, force: true });
@@ -135,6 +161,60 @@ function saveToken(token) {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify({ serverUrl: SERVER_URL, token }, null, 2));
 }
 
+function renderUpdatePanel() {
+    const info = updateState.info;
+
+    return `
+        <h2>Updates</h2>
+        <p>Current version: ${escapeHtml(CURRENT_VERSION)}</p>
+        <p>Last Checked: ${
+          updateState.lastCheckedAt
+           ? escapeHtml(new Date(updateState.lastCheckedAt).toLocaleString())
+           : '-'
+        } </p>
+        <p>Update Status: ${escapeHtml(getUpdateStatusText())}</p>
+        ${
+            info?.asset
+             ? `<p>Asset: <code>${escapeHtml(info.asset.name)}</code></p>`
+             : ''
+        }
+        ${
+            updateState.downloaded
+              ? `<p>Downloaded to: <code>${escapeHtml(updateState.downloaded.filePath)}</code></p>`
+              : ''
+        }
+        ${
+            updateState.error
+              ? `<p>Update error: ${escapeHtml(updateState.error)}</p>`
+              : ''
+    }
+
+    <form method="post" action="/updates/check">
+        <button>Check for updates</button>
+    </form>
+     ${
+      info?.updateAvailable && info?.asset
+        ? `
+          <form method="post" action="/updates/download">
+            <button>Download update</button>
+          </form>
+        `
+        : ''
+    }
+    <p>Update downloads folder: <code>${escapeHtml(getUpdateDir())}</code></p>
+    `;
+}
+
+function getUpdateStatusText(){
+    if (updateState.checking) return 'Checking.....';
+    if (updateState.error) return `Error ${updateState.error}`;
+    if (!updateState.info) return 'Not checked yet';
+    if (updateState.info.updateAvailable) {
+        return `Update available: ${updateState.info.latestVersion}`;
+    }
+
+    return `Up to date: ${updateState.info.currentVersion}`;
+}
 async function pairAgent() {
     const code = crypto.randomBytes(24).toString('hex');
     const pairUrl = `${SERVER_URL}/pair?code=${encodeURIComponent(code)}`;
@@ -166,6 +246,59 @@ async function pairAgent() {
 
 async function getAgentToken() {
     return readSavedToken() || pairAgent();
+}
+
+async function refreshUpdateState() {
+    if (updateState.checking) return updateState;
+
+    updateState = {
+        ...updateState,
+        checking:true,
+        error:null,
+    };
+    try{
+        const info = await checkForUpdate();
+
+        updateState = {
+            checking: false,
+            lastCheckedAt: Date.now(),
+            error: null,
+            info,
+            downloaded: updateState.downloaded,
+        };
+    }   catch (err){
+        updateState = {
+            ...updateState,
+            checking: false,
+            lastCheckedAt: Date.now(),
+            error: err.message,
+        };
+    }
+
+    return updateState;
+}
+
+async function downloadAvailableUpdate() {
+    if (!updateState.info){
+        await refreshUpdateState();
+    }
+
+    if (!updateState.info?.updateAvailable){
+        throw new Error("No Update available :)");
+    }
+
+    if (!updateState.info.asset){
+        throw new Error('No release asset found for this platform');
+    }
+
+    const downloaded = await downloadUpdate(updateState.info.asset);
+
+    updateState ={
+      ...updateState,
+      downloaded,
+    };
+
+    return downloaded;
 }
 
 async function detectLocalActivity(processes) {
@@ -312,6 +445,25 @@ async function main() {
     await getSteamAppList().catch(() => {});
     await tick(token);
     startDashboard(token);
+    refreshUpdateState().catch((err) => {
+        updateState = {
+            ...updateState,
+            error:err.message,
+            lastCheckedAt: Date.now(),
+            checking:false,
+        };
+    });
+    setInterval(() => {
+        refreshUpdateState().catch((err) => {
+            updateState = {
+                ...updateState,
+                error: err.message,
+                lastCheckedAt: Date.now(),
+                checking: false,
+                    };
+                });
+            }, 6 * 60 * 60 * 1000);
+
     intervalHandle = setInterval(() => tick(token), POLL_INTERVAL);
 
     for (const signal of ['SIGINT', 'SIGTERM']) {
