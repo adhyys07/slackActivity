@@ -8,7 +8,7 @@ const RELEASE_API = `https://api.github.com/repos/${OWNER}/${REPO}/releases/late
 const CONFIG_DIR = path.join(os.homedir(), '.slack-activity');
 const UPDATE_DIR = path.join(CONFIG_DIR, 'updates');
 
-export const CURRENT_VERSION = process.env.APP_VERSION || '1.0.0';
+export const CURRENT_VERSION = process.env.APP_VERSION || '1.1.0';
 
 export async function checkForUpdate() {
     const res = await fetch(RELEASE_API, {
