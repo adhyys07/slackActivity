@@ -46,7 +46,9 @@ CREATE TABLE IF NOT EXISTS users (
   local_activity_emoji TEXT,
   local_activity_category TEXT,
   local_activity_detail TEXT,
+  local_activity_custom_text TEXT,
   local_activity_updated_at BIGINT,
+  settings_json TEXT,
   pairing_code TEXT UNIQUE,
   pairing_expires_at BIGINT,
   last_status_text TEXT,
@@ -61,7 +63,9 @@ CREATE TABLE IF NOT EXISTS users (
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS local_activity_emoji TEXT');
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS local_activity_category TEXT');
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS local_activity_detail TEXT');
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS local_activity_custom_text TEXT');
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS local_activity_updated_at BIGINT');
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS settings_json TEXT');
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS pairing_code TEXT UNIQUE');
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS pairing_expires_at BIGINT');
         return;
@@ -81,7 +85,9 @@ CREATE TABLE IF NOT EXISTS users (
   local_activity_emoji TEXT,
   local_activity_category TEXT,
   local_activity_detail TEXT,
+  local_activity_custom_text TEXT,
   local_activity_updated_at INTEGER,
+  settings_json TEXT,
   pairing_code TEXT UNIQUE,
   pairing_expires_at INTEGER,
   last_status_text TEXT,
@@ -101,7 +107,9 @@ CREATE TABLE IF NOT EXISTS users (
     addColumn('local_activity_emoji', 'local_activity_emoji TEXT');
     addColumn('local_activity_category', 'local_activity_category TEXT');
     addColumn('local_activity_detail', 'local_activity_detail TEXT');
+    addColumn('local_activity_custom_text', 'local_activity_custom_text TEXT');
     addColumn('local_activity_updated_at', 'local_activity_updated_at INTEGER');
+    addColumn('settings_json', 'settings_json TEXT');
     addColumn('pairing_code', 'pairing_code TEXT');
     addColumn('pairing_expires_at', 'pairing_expires_at INTEGER');
 }
@@ -347,11 +355,42 @@ WHERE id = ?
 `).run(text, emoji, userId);
 }
 
+export async function getUserSettings(userId) {
+    if (usingPostgres) {
+        const { rows } = await pool.query('SELECT settings_json FROM users WHERE id = $1', [userId]);
+        return parseSettings(rows[0]?.settings_json);
+    }
+
+    const row = sqlite.prepare('SELECT settings_json FROM users WHERE id = ?').get(userId);
+    return parseSettings(row?.settings_json);
+}
+
+export async function saveUserSettings({ userId, settings }) {
+    const json = JSON.stringify(settings || {});
+    if (usingPostgres) {
+        await pool.query(`
+UPDATE users
+SET settings_json = $1,
+    updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT
+WHERE id = $2
+`, [json, userId]);
+        return;
+    }
+
+    sqlite.prepare(`
+UPDATE users
+SET settings_json = ?,
+    updated_at = unixepoch()
+WHERE id = ?
+`).run(json, userId);
+}
+
 export async function updateLocalActivity({ userId, activity }) {
     const name = activity?.name || null;
     const emoji = activity?.emoji || null;
     const category = activity?.category || null;
     const detail = activity?.detail || null;
+    const customText = activity?.customText || null;
     const updatedAt = activity ? Date.now() : null;
 
     if (usingPostgres) {
@@ -361,10 +400,11 @@ SET local_activity_name = $1,
     local_activity_emoji = $2,
     local_activity_category = $3,
     local_activity_detail = $4,
-    local_activity_updated_at = $5,
+    local_activity_custom_text = $5,
+    local_activity_updated_at = $6,
     updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT
-WHERE id = $6
-`, [name, emoji, category, detail, updatedAt, userId]);
+WHERE id = $7
+`, [name, emoji, category, detail, customText, updatedAt, userId]);
         return;
     }
 
@@ -374,8 +414,18 @@ SET local_activity_name = ?,
     local_activity_emoji = ?,
     local_activity_category = ?,
     local_activity_detail = ?,
+    local_activity_custom_text = ?,
     local_activity_updated_at = ?,
     updated_at = unixepoch()
 WHERE id = ?
-`).run(name, emoji, category, detail, updatedAt, userId);
+`).run(name, emoji, category, detail, customText, updatedAt, userId);
+}
+
+function parseSettings(json) {
+    if (!json) return null;
+    try {
+        return JSON.parse(json);
+    } catch {
+        return null;
+    }
 }

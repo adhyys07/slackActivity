@@ -49,14 +49,21 @@ export async function exchangeSlackCode(code) {
     };
 }
 
-async function postSlackStatus(text, emoji, token) {
+async function postSlackStatus(text, emoji, token, options = {}) {
+    const expiration = options.expiration ?? 0;
     const res = await fetch('https://slack.com/api/users.profile.set', {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json; charset=utf-8',
         },
-        body: JSON.stringify({ profile: { status_text: text, status_emoji: emoji, status_expiration:0 } }),
+        body: JSON.stringify({
+            profile: {
+                status_text: text,
+                status_emoji: emoji,
+                status_expiration: expiration,
+            },
+        }),
     });
 
     return res.json();
@@ -65,17 +72,18 @@ async function postSlackStatus(text, emoji, token) {
 export async function setSlackStatus(text, emoji, token, options = {}) {
     const cacheKey = token || 'default';
     const last = lastStatuses.get(cacheKey);
-    if (!options.force && last?.text === text && last?.emoji === emoji) return false;
+    const expiration = options.expiration ?? 0;
+    if (!options.force && last?.text === text && last?.emoji === emoji && last?.expiration === expiration) return false;
 
-    let data = await postSlackStatus(text, emoji, token);
+    let data = await postSlackStatus(text, emoji, token, options);
     if (!data.ok && data.error === 'profile_status_set_failed_not_valid_emoji' && emoji) {
         console.warn(`Slack rejected status emoji ${emoji}; retrying without an emoji.`);
-        data = await postSlackStatus(text, '', token);
+        data = await postSlackStatus(text, '', token, options);
     }
 
     if (!data.ok) throw new Error(`Failed to set Slack status: ${data.error}`);
 
-    lastStatuses.set(cacheKey, { text, emoji });
+    lastStatuses.set(cacheKey, { text, emoji, expiration });
     return true;
 }
 

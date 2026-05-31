@@ -4,6 +4,7 @@ import { setSlackStatus } from './slack.js';
 import { getSpotifyPlayback, refreshSpotifyToken } from './spotify.js';
 
 const LOCAL_ACTIVITY_TTL = parseInt(process.env.LOCAL_ACTIVITY_TTL ?? '45000', 10);
+const STATUS_EXPIRATION_SECONDS = parseInt(process.env.STATUS_EXPIRATION_SECONDS ?? '1800', 10);
 
 function getFreshLocalActivity(user) {
     if (!user.local_activity_name || !user.local_activity_updated_at) return null;
@@ -14,10 +15,18 @@ function getFreshLocalActivity(user) {
         emoji: user.local_activity_emoji,
         category: user.local_activity_category,
         detail: user.local_activity_detail,
+        customText: user.local_activity_custom_text,
     };
 }
 
 function buildLocalStatus(activity) {
+
+    if (activity.customText){
+        return {
+            text: activity.customText,
+            emoji: activity.emoji || ':computer:',
+        };
+    }
     if (activity.category === 'music') {
         return {
             text: activity.detail ? `Listening to ${activity.detail}` : `Listening on ${activity.name}`,
@@ -86,7 +95,8 @@ export async function syncOnce({ force = false } = {}) {
                 continue;
             }
 
-            const slackChanged = await setSlackStatus(text, emoji, user.slack_user_token, { force });
+            const expiration = text ? Math.floor(Date.now() / 1000) + STATUS_EXPIRATION_SECONDS : 0;
+            const slackChanged = await setSlackStatus(text, emoji, user.slack_user_token, { force, expiration });
             await updateLastStatus({ userId: user.id, text, emoji });
             if (slackChanged) updated += 1;
 

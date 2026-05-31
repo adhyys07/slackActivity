@@ -4,11 +4,18 @@ import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import express from 'express';
 import { execFile } from 'child_process';
 import { detectDevTool } from './detectors/devtools.js';
+import { detectMeetingApp } from './detectors/meetings.js';
+import { detectMediaTool } from './detectors/media.js';
+import { enrichCodingActivity } from './detectors/project.js';
 import { detectSpotify } from './detectors/spotify.js';
 import { detectSteamGame, getSteamAppList } from './detectors/steam.js';
 import { getRunningProcesses } from './platform/processes.js';
+import { applyActivitySettings, sortActivitiesByPriority } from '../config/user-settings.js';
+import { loadLocalSettings, pauseForMs, pauseUntilTomorrow, resumeUpdates } from './local-settings.js';
+import { addActivityHistoryEntry, clearActivityHistory, readActivityHistory } from './activity-history.js';
 
 const DEFAULT_SERVER_URL = 'https://slackactivity-c162e24cca07.herokuapp.com';
 const SERVER_URL = (process.env.SERVER_URL || process.env.BASE_URL || DEFAULT_SERVER_URL).replace(/\/$/, '');
@@ -17,6 +24,12 @@ const DEBUG = process.env.DEBUG === 'true';
 const CONFIG_DIR = path.join(os.homedir(), '.slack-activity');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'agent.json');
 const LOG_FILE = process.env.LOCAL_AGENT_LOG || (process.pkg ? path.join(path.dirname(process.execPath), 'SlackActivityAgent.log') : null);
+let lastActivity = null;
+let lastSyncAt = null;
+let lastError = null;
+let remoteSettingsCache = null;
+let remoteSettingsFetchedAt = 0;
+const SETTINGS_CACHE_TTL = 30 * 1000;
 
 if (!SERVER_URL) {
     console.error('SERVER_URL is required. Example: $env:SERVER_URL="https://your-app.herokuapp.com"');
@@ -49,6 +62,63 @@ function openBrowser(url) {
         ? ['-NoProfile', '-Command', 'Start-Process', url]
         : [url];
     execFile(command, args);
+}
+
+function startDashboard(token) {
+    const app = express();
+
+    app.get('/', (req, res) => {
+        res.type('html').send(`
+            <!doctype html>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+              body { font-family: Arial, sans-serif; margin: 32px; color: #1d1c1d; }
+              button { margin: 4px 8px 4px 0; padding: 8px 10px; }
+              code { background: #eee; padding: 2px 4px; border-radius: 4px; }
+            </style>
+            <h1>Slack Activity</h1>
+            <p>Current: ${escapeHtml(lastActivity?.name ?? 'None')}</p>
+            <p>Category: ${lastActivity?.category ?? '-'}</p>
+            <p>Last sync: ${lastSyncAt ? new Date(lastSyncAt).toLocaleString() : '-'}</p>
+            <p>Error: ${escapeHtml(lastError ?? '-')}</p>
+            ${renderHistoryTable(readActivityHistory())}
+            <form method="post" action="/history/clear"><button>Clear history</button></form>
+            <form method="post" action="/pause"><button>Pause 1 hour</button></form>
+            <form method="post" action="/pause-tomorrow"><button>Pause until tomorrow</button></form>
+            <form method="post" action="/resume"><button>Resume</button></form>
+            <p>Settings file: <code>${escapeHtml(path.join(CONFIG_DIR, 'settings.json'))}</code></p>
+            `);
+    });
+
+    app.post('/pause', express.urlencoded({ extended: false }), async (req, res) => {
+        pauseForMs(60 * 60 * 1000);
+        await tick(token, { clear: true, clearStatus: true, force: true });
+        res.redirect('/');
+    });
+
+    app.post('/pause-tomorrow', express.urlencoded({ extended: false }), async (req, res) => {
+        pauseUntilTomorrow();
+        await tick(token, { clear: true, clearStatus: true, force: true });
+        res.redirect('/');
+    });
+
+    app.post('/history/clear', express.urlencoded({ extended: false }), (req, res) => {
+        clearActivityHistory();
+        res.redirect('/');
+    });
+
+    app.post('/resume', async (req, res) => {
+        resumeUpdates();
+        await tick(token, { force: true });
+        res.redirect('/');
+    });
+
+    const server = app.listen(3784, () => {
+        log('Dashboard running at http://localhost:3784');
+    });
+    server.on('error', (err) => {
+        logError(chalk.yellow('dashboard unavailable:'), err.message);
+    });
 }
 
 function readSavedToken() {
@@ -99,16 +169,69 @@ async function getAgentToken() {
 }
 
 async function detectLocalActivity(processes) {
-    const steam = await detectSteamGame(processes);
-    if (steam) return steam;
+    const settings = await loadEffectiveSettings();
 
-    const spotify = await detectSpotify(processes);
-    if (spotify) return spotify;
+    const meeting = detectMeetingApp(processes);
+    if (meeting && settings.quietWhenMeeting) return null;
 
-    const dev = detectDevTool(processes);
-    if (dev) return dev;
+    const candidates = [
+        await detectSteamGame(processes),
+        await detectSpotify(processes),
+        meeting,
+        detectMediaTool(processes),
+        detectDevTool(processes),
+    ]
+        .filter(Boolean)
+        .map((activity) => enrichCodingActivity(activity, settings))
+        .map((activity) => applyActivitySettings(activity, settings))
+        .filter(Boolean);
+    
+    return sortActivitiesByPriority(candidates, settings)[0] ?? null;
+}
 
-    return null;
+async function loadEffectiveSettings() {
+    const localSettings = loadLocalSettings();
+    if (remoteSettingsCache && Date.now() - remoteSettingsFetchedAt < SETTINGS_CACHE_TTL) {
+        return mergeSettings(localSettings, remoteSettingsCache);
+    }
+
+    const token = readSavedToken();
+    if (!token) return localSettings;
+
+    try {
+        const res = await fetch(`${SERVER_URL}/api/settings`, {
+            headers: { 'Authorization': `Bearer ${token}` },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok && data.settings) {
+            remoteSettingsCache = data.settings;
+            remoteSettingsFetchedAt = Date.now();
+            return mergeSettings(localSettings, data.settings);
+        }
+    } catch (err) {
+        if (DEBUG) log(chalk.gray(`settings fetch skipped: ${err.message}`));
+    }
+
+    return localSettings;
+}
+
+function mergeSettings(base, override) {
+    return {
+        ...base,
+        ...override,
+        quietHours: {
+            ...base.quietHours,
+            ...override.quietHours,
+        },
+        privacy: {
+            ...base.privacy,
+            ...override.privacy,
+        },
+        appOverrides: {
+            ...base.appOverrides,
+            ...override.appOverrides,
+        },
+    };
 }
 
 async function postActivity(token, activity, options = {}) {
@@ -139,6 +262,21 @@ async function tick(token, options = {}) {
         if (options.force || payload !== lastPayload) {
             await postActivity(token, activity, options);
             lastPayload = payload;
+            lastActivity = activity;
+            lastSyncAt = Date.now();
+            lastError = null;
+            addActivityHistoryEntry({
+                activity: activity
+                 ? {
+                    name: activity.name,
+                    category: activity.category,
+                    emoji: activity.emoji,
+                    detail: activity.detail ?? null,
+                    customText: activity.customText ?? null,
+                 }
+               : null,
+               action: activity ? 'reported' : 'cleared',
+            });
 
             if (activity) {
                 log(chalk.green('reported'), chalk.bold(activity.name), chalk.gray(activity.category));
@@ -147,9 +285,13 @@ async function tick(token, options = {}) {
             }
         } else if (activity) {
             await postActivity(token, activity);
+            lastActivity = activity;
+            lastSyncAt = Date.now();
+            lastError = null;
             if (DEBUG) log(chalk.gray(`refreshed ${activity.name}`));
         }
     } catch (err) {
+        lastError = err.message;
         logError(chalk.red('local agent error:'), err.message);
     }
 }
@@ -169,6 +311,7 @@ async function main() {
     const token = await getAgentToken();
     await getSteamAppList().catch(() => {});
     await tick(token);
+    startDashboard(token);
     intervalHandle = setInterval(() => tick(token), POLL_INTERVAL);
 
     for (const signal of ['SIGINT', 'SIGTERM']) {
@@ -184,11 +327,28 @@ async function main() {
     if (process.stdin) {
         process.stdin.setEncoding('utf8');
         process.stdin.on('data', async (chunk) => {
-            if (!chunk.toLowerCase().includes('shutdown')) return;
-            try {
-                await shutdown(token, 'tray exit');
-            } finally {
-                process.exit(0);
+            const command = chunk.trim().toLowerCase();
+
+            if (command.startsWith('pause:')) {
+                const value = command.split(':')[1];
+                if (value === 'tomorrow') pauseUntilTomorrow();
+                else pauseForMs(Number(value));
+                await tick(token, { clear: true, clearStatus: true, force: true });
+                return;
+            }
+
+            if (command === 'resume') {
+                resumeUpdates();
+                await tick(token, { force: true });
+                return;
+            }
+
+            if (command === 'shutdown') {
+                try {
+                    await shutdown(token, 'tray exit');
+                } finally {
+                    process.exit(0);
+                }
             }
         });
     }
@@ -198,3 +358,53 @@ main().catch((err) => {
     logError(chalk.red(err.message));
     process.exit(1);
 });
+
+function escapeHtml(value) {
+    return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
+function renderHistoryTable(history) {
+    if (!history.length) {
+        return '<h2>Activity History</h2><p>No history yet.</p>';
+    }
+
+    const rows = history
+        .slice(0, 50)
+        .map((entry) => {
+            const activity = entry.activity;
+            const label = activity
+                ? `${activity.emoji || ''} ${activity.name} (${activity.category})`
+                : 'No activity';
+            const detail = activity?.customText || activity?.detail || '';
+
+            return `
+                <tr>
+                    <td>${escapeHtml(new Date(entry.timestamp).toLocaleString())}</td>
+                    <td>${escapeHtml(entry.action)}</td>
+                    <td>${escapeHtml(label)}</td>
+                    <td>${escapeHtml(detail)}</td>
+                </tr>
+            `;
+        })
+        .join('');
+
+    return `
+        <h2>Activity History</h2>
+        <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;margin:16px 0;width:100%">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Action</th>
+                    <th>Activity</th>
+                    <th>Detail</th>
+                </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+        </table>
+    `;
+}

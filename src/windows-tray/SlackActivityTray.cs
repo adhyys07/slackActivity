@@ -158,6 +158,12 @@ namespace SlackActivityTray
         {
             var menu = new ContextMenuStrip();
             menu.Items.Add("Open Slack Activity", null, delegate { OpenUrl("https://slackactivity-c162e24cca07.herokuapp.com"); });
+            menu.Items.Add("Open Local Dashboard", null, delegate { OpenUrl("http://localhost:3784"); });
+            menu.Items.Add("Pause for 1 hour", null, delegate { SendAgentCommand("pause:3600000"); });
+            menu.Items.Add("Pause until tomorrow", null, delegate { SendAgentCommand("pause:tomorrow"); });
+            menu.Items.Add("Resume updates", null, delegate { SendAgentCommand("resume"); });
+            menu.Items.Add("Start on login", null, delegate { EnableStartup(); });
+            menu.Items.Add("Disable start on login", null, delegate { DisableStartup(); });
             menu.Items.Add("Restart Agent", null, delegate { RestartAgent(); });
             menu.Items.Add("Exit", null, delegate { Application.Exit(); });
 
@@ -184,6 +190,60 @@ namespace SlackActivityTray
                 Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
             }
             catch {}
+        }
+
+        private static void SendAgentCommand(string command)
+        {
+            try
+            {
+                if (agentProcess != null && !agentProcess.HasExited)
+                {
+                    agentProcess.StandardInput.WriteLine(command);
+                    agentProcess.StandardInput.Flush();
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("Failed to send agent command: " + ex.Message);
+            }
+        }
+
+        private static void EnableStartup()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(
+                    "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+                    true
+                ))
+                {
+                    key.SetValue("SlackActivity", Application.ExecutablePath);
+                }
+                tray.ShowBalloonTip(2000, "Slack Activity", "Start on login enabled.", ToolTipIcon.Info);
+            }
+            catch (Exception ex)
+            {
+                Log("Failed to enable startup: " + ex.Message);
+            }
+        }
+
+        private static void DisableStartup()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(
+                    "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+                    true
+                ))
+                {
+                    key.DeleteValue("SlackActivity", false);
+                }
+                tray.ShowBalloonTip(2000, "Slack Activity", "Start on login disabled.", ToolTipIcon.Info);
+            }
+            catch (Exception ex)
+            {
+                Log("Failed to disable startup: " + ex.Message);
+            }
         }
 
         private static void RestartAgent()

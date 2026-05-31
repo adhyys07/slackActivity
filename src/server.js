@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import chalk from 'chalk';
-import { clearPairingCode, ensureAgentToken, findSlackUser, findUserByAgentToken, findUserById, findUserByPairingCode, getStats, getSyncStats, initDb, saveSpotifyTokens, setPairingCode, updateLastStatus, updateLocalActivity, upsertSlackUser } from './db.js';
+import { clearPairingCode, ensureAgentToken, findSlackUser, findUserByAgentToken, findUserById, findUserByPairingCode, getStats, getSyncStats, getUserSettings, initDb, saveSpotifyTokens, saveUserSettings, setPairingCode, updateLastStatus, updateLocalActivity, upsertSlackUser } from './db.js';
 import { clearSlackStatus, exchangeSlackCode, getSlackAuthUrl } from './slack.js';
 import { exchangeSpotifyCode, getSpotifyAuthUrl } from './spotify.js';
 import { startWorker, syncOnce } from './worker.js';
@@ -10,6 +10,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 app.use(express.json({ limit: '16kb' }));
+app.use(express.urlencoded({ extended: false, limit: '16kb' }));
 
 function page(title, body) {
     return `<!doctype html>
@@ -39,7 +40,8 @@ function page(title, body) {
       color: #555;
       line-height: 1.5;
     }
-    a.button {
+    a.button,
+    button.button {
       display: inline-block;
       margin-top: 18px;
       padding: 12px 16px;
@@ -108,16 +110,9 @@ app.get('/sync-now', async (req, res) => {
 });
 
 app.post('/api/local-activity', async (req, res) => {
-    const auth = req.headers.authorization || '';
-    const token = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : null;
-    if (!token) {
-        res.status(401).json({ ok: false, error: 'Missing local agent token' });
-        return;
-    }
-
-    const user = await findUserByAgentToken(token);
+    const user = await getUserFromAgentRequest(req);
     if (!user) {
-        res.status(401).json({ ok: false, error: 'Invalid local agent token' });
+        res.status(401).json({ ok: false, error: 'Missing or invalid local agent token' });
         return;
     }
 
@@ -199,6 +194,7 @@ app.get('/auth/spotify/callback', async (req, res) => {
           <p>Your Slack status will update while Spotify is playing. To detect Steam and desktop apps, run the local agent on your computer.</p>
           <div class="panel">
             <p><code>$env:SERVER_URL="${baseUrl}"; $env:LOCAL_AGENT_TOKEN="${agentToken}"; npm run local-agent</code></p>
+            <p><a href="/settings?token=${encodeURIComponent(agentToken)}">Open settings</a></p>
           </div>
         `));
     } catch (err) {
@@ -208,6 +204,77 @@ app.get('/auth/spotify/callback', async (req, res) => {
           <p><a href="/">Return home</a></p>
         `));
     }
+});
+
+app.get('/settings', async (req, res) => {
+    const user = await getUserFromToken(req.query.token);
+    if (!user) {
+        res.status(401).type('html').send(page('Settings', '<h1>Settings unavailable</h1><p>Missing or invalid settings token.</p>'));
+        return;
+    }
+
+    const settings = await getUserSettings(user.id);
+    const json = JSON.stringify(settings || {}, null, 2);
+    res.type('html').send(page('Slack Activity Settings', `
+      <h1>Slack Activity Settings</h1>
+      <p>Edit JSON settings for app priority, custom status text, quiet hours, and privacy.</p>
+      <form method="post" action="/settings">
+        <input type="hidden" name="token" value="${escapeHtml(req.query.token)}">
+        <textarea name="settings" rows="22" style="width:100%;font-family:monospace">${escapeHtml(json)}</textarea>
+        <p><button class="button" type="submit">Save settings</button></p>
+      </form>
+    `));
+});
+
+app.post('/settings', async (req, res) => {
+    const user = await getUserFromToken(req.body.token);
+    if (!user) {
+        res.status(401).type('html').send(page('Settings', '<h1>Settings unavailable</h1><p>Missing or invalid settings token.</p>'));
+        return;
+    }
+
+    try {
+        const settings = JSON.parse(req.body.settings || '{}');
+        await saveUserSettings({ userId: user.id, settings });
+        res.redirect(`/settings?token=${encodeURIComponent(req.body.token)}`);
+    } catch (err) {
+        res.status(400).type('html').send(page('Settings Error', `<h1>Could not save settings</h1><p>${escapeHtml(err.message)}</p>`));
+    }
+});
+
+app.get('/api/settings', async (req, res) => {
+    const user = await getUserFromAgentRequest(req);
+    if (!user) {
+        res.status(401).json({ ok: false, error: 'Missing or invalid local agent token' });
+        return;
+    }
+
+    const settings = await getUserSettings(user.id);
+
+    res.json({
+        ok: true,
+        settings,
+    });
+});
+
+app.post('/api/settings', async (req, res) => {
+    const user = await getUserFromAgentRequest(req);
+    if (!user) {
+        res.status(401).json({ ok: false, error: 'Missing or invalid local agent token' });
+        return;
+    }
+
+    if (!req.body?.settings || typeof req.body.settings !== 'object') {
+        res.status(400).json({ ok: false, error: 'Invalid settings payload' });
+        return;
+    }
+
+    await saveUserSettings({
+        userId: user.id,
+        settings: req.body.settings,
+    });
+
+    res.json({ ok:true });
 });
 
 app.get('/pair', (req, res) => {
@@ -246,3 +313,23 @@ app.listen(port, () => {
     console.log(chalk.gray(`Listening on ${baseUrl}`));
     startWorker();
 });
+
+async function getUserFromAgentRequest(req) {
+    const auth = req.headers.authorization || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : null;
+    return getUserFromToken(token);
+}
+
+async function getUserFromToken(token) {
+    if (!token) return null;
+    return findUserByAgentToken(token);
+}
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
